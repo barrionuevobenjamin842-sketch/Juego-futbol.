@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Tierras Salvajes</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#101914;color:#fff;font-family:Arial,sans-serif;touch-action:none}
+#game{display:block;width:100vw;height:100vh;background:#1b3522}
+#hud{position:fixed;left:12px;top:12px;width:250px;padding:12px;border-radius:14px;background:rgba(7,13,10,.82);border:1px solid rgba(255,255,255,.12);z-index:5}
+.title{font-size:20px;font-weight:800;margin-bottom:8px}
+.stat{font-size:12px;margin-top:6px;color:#ddd}
+.bar{height:10px;border-radius:10px;background:#26332b;overflow:hidden;margin-top:3px}
+.fill{height:100%;width:100%;transition:width .15s}
+#hp{background:#e34b42}#food{background:#d9a52b}#water{background:#36a9d6}#stam{background:#43c777}
+#day{position:fixed;right:12px;top:12px;padding:10px 13px;border-radius:12px;background:rgba(7,13,10,.78);z-index:5;font-weight:700}
+#msg{position:fixed;left:50%;top:18%;transform:translateX(-50%);padding:10px 16px;border-radius:12px;background:rgba(0,0,0,.75);opacity:0;transition:.2s;z-index:10;pointer-events:none}
+#inventory{position:fixed;left:12px;bottom:12px;padding:10px 12px;border-radius:12px;background:rgba(7,13,10,.82);font-size:13px;z-index:5;line-height:1.5}
+#controls{position:fixed;inset:0;z-index:6;pointer-events:none}
+#stick{position:absolute;left:25px;bottom:28px;width:145px;height:145px;border-radius:50%;border:2px solid rgba(255,255,255,.16);background:rgba(0,0,0,.18);pointer-events:auto}
+#knob{position:absolute;left:43px;top:43px;width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,.16);border:2px solid rgba(255,255,255,.16)}
+.actions{position:absolute;right:18px;bottom:25px;display:grid;grid-template-columns:repeat(2,76px);gap:10px;pointer-events:auto}
+.btn{width:76px;height:76px;border-radius:50%;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.38);color:#fff;font-weight:800;font-size:11px}
+.btn:active{transform:scale(.94);background:rgba(255,255,255,.16)}
+#hint{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);font-size:11px;color:rgba(255,255,255,.55);z-index:4}
+@media(min-width:800px){#hud{width:290px}.actions{right:30px}.btn{width:84px;height:84px}.actions{grid-template-columns:repeat(2,84px)}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="title">🌲 TIERRAS SALVAJES</div>
+  <div class="stat">❤️ Vida <div class="bar"><div id="hp" class="fill"></div></div></div>
+  <div class="stat">🍖 Hambre <div class="bar"><div id="food" class="fill"></div></div></div>
+  <div class="stat">💧 Sed <div class="bar"><div id="water" class="fill"></div></div></div>
+  <div class="stat">⚡ Energía <div class="bar"><div id="stam" class="fill"></div></div></div>
+</div>
+
+<div id="day">☀️ Día 1 — 08:00</div>
+<div id="msg"></div>
+
+<div id="inventory">
+  🪵 <b id="wood">0</b> &nbsp; 🪨 <b id="stone">0</b><br>
+  🍎 <b id="berries">2</b> &nbsp; 💧 <b id="waterInv">2</b>
+</div>
+
+<div id="controls">
+  <div id="stick"><div id="knob"></div></div>
+  <div class="actions">
+    <button class="btn" id="attack">⚔️<br>ATACAR</button>
+    <button class="btn" id="collect">🪓<br>RECOGER</button>
+    <button class="btn" id="eat">🍎<br>COMER</button>
+    <button class="btn" id="drink">💧<br>BEBER</button>
+  </div>
+</div>
+<div id="hint">WASD / flechas • E recoger • F atacar • 1 comer • 2 beber • P guardar</div>
+
+<script>
+(() => {
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+let W=innerWidth,H=innerHeight,dpr=Math.min(devicePixelRatio||1,2);
+function resize(){W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize); resize();
+
+const stats={hp:100,hunger:100,thirst:100,stam:100};
+const inv={wood:0,stone:0,berries:2,water:2};
+const player={x:0,y:0,r:15,dirX:0,dirY:1,attack:0,hit:0};
+let camX=0,camY=0,time=8*60,day=1,paused=false,last=performance.now();
+const keys={};
+let joy={x:0,y:0,active:false,id:null};
+
+const world={w:2600,h:2600};
+const objects=[],enemies=[];
+let seed=93217;
+function rnd(){seed=(seed*1664525+1013904223)>>>0;return seed/4294967296}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function say(t){const e=document.getElementById('msg');e.textContent=t;e.style.opacity=1;clearTimeout(say.t);say.t=setTimeout(()=>e.style.opacity=0,1200)}
+function validSpot(x,y){return Math.hypot(x,y)>170}
+function makeWorld(){
+  objects.length=0; enemies.length=0;
+  for(let i=0;i<150;i++){
+    let x=(rnd()-.5)*world.w,y=(rnd()-.5)*world.h;
+    if(!validSpot(x,y))continue;
+    const type=rnd()<.58?'tree':(rnd()<.72?'stone':'berry');
+    objects.push({x,y,type,r:type==='tree'?25:18,hp:1});
+  }
+  for(let i=0;i<12;i++){
+    let a=rnd()*Math.PI*2,rad=500+rnd()*700;
+    enemies.push({x:Math.cos(a)*rad,y:Math.sin(a)*rad,r:18,hp:3,cd:0});
+  }
+}
+makeWorld();
+
+function save(){
+  localStorage.setItem('tierras_salvajes_save',JSON.stringify({stats,inv,player,day,time,objects,enemies}));
+  say('💾 Partida guardada');
+}
+function load(){
+  try{
+    const s=JSON.parse(localStorage.getItem('tierras_salvajes_save'));
+    if(!s)return;
+    Object.assign(stats,s.stats);Object.assign(inv,s.inv);Object.assign(player,s.player);
+    day=s.day||1;time=s.time||480;
+    objects.length=0;objects.push(...(s.objects||[]));
+    enemies.length=0;enemies.push(...(s.enemies||[]));
+  }catch(e){}
+}
+load();
+
+function screenX(x){return x-player.x+W/2}
+function screenY(y){return y-player.y+H/2}
+
+function drawGround(){
+  ctx.fillStyle='#315b35';ctx.fillRect(0,0,W,H);
+  const grid=100;
+  const ox=((W/2-player.x)%grid+grid)%grid,oy=((H/2-player.y)%grid+grid)%grid;
+  ctx.strokeStyle='rgba(255,255,255,.025)';ctx.lineWidth=1;
+  for(let x=ox;x<W;x+=grid){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(let y=oy;y<H;y+=grid){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+  // pequeñas zonas de tierra
+  for(let i=-1;i<14;i++)for(let j=-1;j<10;j++){
+    let x=i*220-((player.x*0.18)%220),y=j*220-((player.y*0.18)%220);
+    ctx.fillStyle='rgba(115,91,52,.08)';ctx.beginPath();ctx.ellipse(x,y,80,35,.4,0,Math.PI*2);ctx.fill();
+  }
+}
+function drawTree(o,x,y){
+  ctx.save();ctx.translate(x,y);
+  ctx.fillStyle='rgba(0,0,0,.2)';ctx.beginPath();ctx.ellipse(0,18,29,10,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#6b4426';ctx.fillRect(-7,-3,14,28);
+  ctx.fillStyle='#173f22';ctx.beginPath();ctx.arc(0,-16,27,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#245f2f';ctx.beginPath();ctx.arc(-13,-8,20,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2e7338';ctx.beginPath();ctx.arc(12,-11,19,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+function drawStone(o,x,y){
+  ctx.save();ctx.translate(x,y);
+  ctx.fillStyle='rgba(0,0,0,.2)';ctx.beginPath();ctx.ellipse(0,12,22,8,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#777f7d';ctx.beginPath();ctx.moveTo(-19,8);ctx.lineTo(-12,-9);ctx.lineTo(3,-15);ctx.lineTo(19,-5);ctx.lineTo(13,11);ctx.lineTo(-7,15);ctx.closePath();ctx.fill();
+  ctx.fillStyle='#a5aaa6';ctx.beginPath();ctx.arc(-5,-5,5,0,Math.PI*2);ctx.fill();ctx.restore();
+}
+function drawBerry(o,x,y){
+  ctx.fillStyle='rgba(0,0,0,.18)';ctx.beginPath();ctx.ellipse(x,y+8,18,7,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2f7134';ctx.beginPath();ctx.arc(x,y,15,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#d83e53';ctx.beginPath();ctx.arc(x-6,y-2,4,0,Math.PI*2);ctx.arc(x+4,y-6,4,0,Math.PI*2);ctx.arc(x+5,y+5,4,0,Math.PI*2);ctx.fill();
+}
+function drawEnemy(e,x,y){
+  ctx.fillStyle='rgba(0,0,0,.2)';ctx.beginPath();ctx.ellipse(x,y+18,23,8,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#9b3d3d';ctx.beginPath();ctx.arc(x,y,18,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#eee';ctx.beginPath();ctx.arc(x-6,y-3,4,0,Math.PI*2);ctx.arc(x+6,y-3,4,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#222';ctx.beginPath();ctx.arc(x-6,y-3,2,0,Math.PI*2);ctx.arc(x+6,y-3,2,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#e24b42';ctx.fillRect(x-18,y-29,36,4);ctx.fillStyle='#51c45d';ctx.fillRect(x-18,y-29,36*(e.hp/3),4);
+}
+function drawPlayer(){
+  const x=W/2,y=H/2;
+  ctx.fillStyle='rgba(0,0,0,.25)';ctx.beginPath();ctx.ellipse(x,y+20,22,9,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2860a0';ctx.fillRect(x-12,y-4,24,27);
+  ctx.fillStyle='#e5b58b';ctx.beginPath();ctx.arc(x,y-15,12,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#3a2418';ctx.fillRect(x-11,y-27,22,7);
+  ctx.strokeStyle='#f4d35e';ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+player.dirX*25,y+player.dirY*25);ctx.stroke();
+  if(player.attack>0){ctx.strokeStyle='rgba(255,240,150,.8)';ctx.lineWidth=5;ctx.beginPath();ctx.arc(x,y,43,-1.4,1.4);ctx.stroke()}
+}
+function draw(){
+  drawGround();
+  const visible=[];
+  for(const o of objects){const x=screenX(o.x),y=screenY(o.y);if(x>-80&&x<W+80&&y>-80&&y<H+80)visible.push({y,o,x})}
+  for(const e of enemies){const x=screenX(e.x),y=screenY(e.y);if(x>-80&&x<W+80&&y>-80&&y<H+80)visible.push({y,e,x})}
+  visible.sort((a,b)=>a.y-b.y);
+  for(const v of visible){
+    if(v.o){if(v.o.type==='tree')drawTree(v.o,v.x,v.y);else if(v.o.type==='stone')drawStone(v.o,v.x,v.y);else drawBerry(v.o,v.x,v.y)}
+    else drawEnemy(v.e,v.x,v.y);
+  }
+  drawPlayer();
+  const night=Math.max(0,Math.sin((time/1440)*Math.PI*2-Math.PI/2));
+  if(night>.15){ctx.fillStyle=`rgba(5,10,30,${night*.48})`;ctx.fillRect(0,0,W,H)}
+}
+function updateUI(){
+  for(const [id,val] of [['hp',stats.hp],['food',stats.hunger],['water',stats.thirst],['stam',stats.stam]])document.getElementById(id).style.width=clamp(val,0,100)+'%';
+  document.getElementById('wood').textContent=inv.wood;
+  document.getElementById('stone').textContent=inv.stone;
+  document.getElementById('berries').textContent=inv.berries;
+  document.getElementById('waterInv').textContent=inv.water;
+  const h=Math.floor(time/60)%24,m=Math.floor(time%60).toString().padStart(2,'0');
+  document.getElementById('day').textContent=(h>=7&&h<19?'☀️':'🌙')+' Día '+day+' — '+String(h).padStart(2,'0')+':'+m;
+}
+function inputVector(){
+  let x=0,y=0;
+  if(keys.w||keys.ArrowUp)y-=1;if(keys.s||keys.ArrowDown)y+=1;
+  if(keys.a||keys.ArrowLeft)x-=1;if(keys.d||keys.ArrowRight)x+=1;
+  if(joy.active){x+=joy.x;y+=joy.y}
+  const n=Math.hypot(x,y);if(n>1){x/=n;y/=n}
+  return {x,y,n:Math.min(1,n)}
+}
+function attack(){
+  if(stats.stam<8){say('⚡ Sin energía');return}
+  stats.stam-=8;player.attack=.22;
+  let hit=0;
+  for(const e of enemies){
+    if(dist(player,e)<75){
+      e.hp--;hit++;
+      const dx=e.x-player.x,dy=e.y-player.y,n=Math.hypot(dx,dy)||1;
+      e.x+=dx/n*35;e.y+=dy/n*35;
+    }
+  }
+  for(let i=enemies.length-1;i>=0;i--)if(enemies[i].hp<=0){enemies.splice(i,1);say('☠️ Animal derrotado');}
+  if(!hit)say('⚔️ Golpe al aire');
+}
+function collect(){
+  let nearest=null,nd=70;
+  for(const o of objects){const d=dist(player,o);if(d<nd){nd=d;nearest=o}}
+  if(!nearest){say('Nada cerca');return}
+  if(nearest.type==='tree'){inv.wood+=2;say('🪵 +2 madera')}
+  else if(nearest.type==='stone'){inv.stone+=2;say('🪨 +2 piedra')}
+  else {inv.berries+=1;say('🍎 +1 comida')}
+  objects.splice(objects.indexOf(nearest),1);
+}
+function eat(){if(inv.berries<=0)return say('No tienes comida');inv.berries--;stats.hunger=clamp(stats.hunger+28,0,100);say('🍎 Comiste')}
+function drink(){if(inv.water<=0)return say('No tienes agua');inv.water--;stats.thirst=clamp(stats.thirst+35,0,100);say('💧 Bebiste')}
+function loop(now){
+  const dt=Math.min(.04,(now-last)/1000);last=now;
+  const v=inputVector(),speed=170;
+  if(v.n>0){player.x+=v.x*speed*dt;player.y+=v.y*speed*dt;player.dirX=v.x;player.dirY=v.y}
+  player.x=clamp(player.x,-world.w/2+30,world.w/2-30);player.y=clamp(player.y,-world.h/2+30,world.h/2-30);
+  stats.hunger-=dt*.32;stats.thirst-=dt*.48;
+  if(stats.hunger<18||stats.thirst<18)stats.hp-=dt*1.8;
+  stats.stam=clamp(stats.stam+(v.n<.1?18:5)*dt,0,100);
+  time+=dt*2.2;if(time>=1440){time-=1440;day++;say('🌅 Comienza el Día '+day)}
+  player.attack=Math.max(0,player.attack-dt);
+  for(const e of enemies){
+    e.cd=Math.max(0,e.cd-dt);
+    const d=dist(player,e);
+    if(d<520){const dx=player.x-e.x,dy=player.y-e.y,n=Math.hypot(dx,dy)||1;
+      if(d>42){e.x+=dx/n*42*dt;e.y+=dy/n*42*dt}
+      else if(e.cd<=0){stats.hp-=7;e.cd=1.1;say('🩸 Te atacaron')}
+    }
+  }
+  if(stats.hp<=0){stats.hp=100;stats.hunger=80;stats.thirst=80;player.x=0;player.y=0;say('💀 Te desmayaste y volviste al campamento')}
+  draw();updateUI();requestAnimationFrame(loop);
+}
+function bind(id,fn){document.getElementById(id).addEventListener('pointerdown',e=>{e.preventDefault();fn()})}
+bind('attack',attack);bind('collect',collect);bind('eat',eat);bind('drink',drink);
+
+addEventListener('keydown',e=>{
+  keys[e.key]=true;
+  if(e.key==='f'||e.key==='F')attack();
+  if(e.key==='e'||e.key==='E')collect();
+  if(e.key==='1')eat();if(e.key==='2')drink();if(e.key==='p'||e.key==='P')save();
+});
+addEventListener('keyup',e=>keys[e.key]=false);
+
+const stick=document.getElementById('stick'),knob=document.getElementById('knob');
+function joyMove(e){
+  const r=stick.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+  let x=e.clientX-cx,y=e.clientY-cy,max=48,n=Math.hypot(x,y)||1;
+  if(n>max){x=x/n*max;y=y/n*max}
+  joy.x=x/max;joy.y=y/max;knob.style.transform=`translate(${x}px,${y}px)`;
+}
+stick.addEventListener('pointerdown',e=>{joy.active=true;joy.id=e.pointerId;stick.setPointerCapture(e.pointerId);joyMove(e)});
+stick.addEventListener('pointermove',e=>{if(joy.active&&e.pointerId===joy.id)joyMove(e)});
+function joyEnd(e){if(e.pointerId===joy.id){joy.active=false;joy.x=0;joy.y=0;knob.style.transform='translate(0,0)'}}
+stick.addEventListener('pointerup',joyEnd);stick.addEventListener('pointercancel',joyEnd);
+
+updateUI();requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
